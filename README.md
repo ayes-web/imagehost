@@ -1,11 +1,16 @@
 # Imagehost
 
-## Using docker-compose.yml
+## Docker
 
-If using s3 (This of course works with backblaze B2 also) copy example_s3.json to config.json and fill out the fields
-else copy example_local.json to config.json and fill out the fields
+Have a look at example_docker.toml.
+By default it uses that config.
 
 ## Without docker
 
+Use example_local.toml as base config.
+
 There's a handy build script, it puts assets and binary into bin/build.tar.gz
-you still have to fill out config.json
+
+## S3/B2 bucket
+
+Look in example_s3.toml for what settings to add to your config.
