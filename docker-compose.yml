@@ -4,6 +4,7 @@ services:
   imagehost:
     container_name: imagehost
     image: ayay2021/imagehost
+    build: ./
     environment:
       - PUID=1000
       - PGID=1000
