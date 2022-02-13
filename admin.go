@@ -10,7 +10,9 @@ import (
 // Checks if the user is an admin with token
 func is_admin(db *sql.DB, token string) bool {
 	var result string
-	db.QueryRow("SELECT token FROM accounts WHERE token=$1 AND account_type='ADMIN'; ", token).Scan(&result)
+	if db.QueryRow("SELECT token FROM accounts WHERE token=$1 AND account_type='ADMIN'; ", token).Scan(&result) != nil {
+		return false
+	}
 
 	return result == token
 }
@@ -30,8 +32,7 @@ func admin_create_user(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 
 	var new_user User
-	row := db.QueryRow("INSERT INTO public.accounts DEFAULT values RETURNING token, upload_token, id, account_type")
-	if row.Scan(&new_user.Token, &new_user.Upload_token, &new_user.Id, &new_user.Account_type) != nil {
+	if db.QueryRow("INSERT INTO public.accounts DEFAULT values RETURNING token, upload_token, id, account_type").Scan(&new_user.Token, &new_user.Upload_token, &new_user.Id, &new_user.Account_type) != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}

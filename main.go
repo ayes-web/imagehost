@@ -112,6 +112,11 @@ func main() {
 				return
 			}
 
+			if err := db.Ping(); err != nil { // If database is down
+				fmt.Fprintf(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+
 			switch r.URL.Path {
 			case "/api/upload":
 				upload_image_api(w, r, db, config, logger)
@@ -208,6 +213,21 @@ func prepeare_db(config Config, logger *log.Logger) *sql.DB {
 	}
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS public.accounts (token uuid NOT NULL DEFAULT uuid_generate_v4(), upload_token uuid NOT NULL DEFAULT uuid_generate_v4(), id serial4 NOT NULL, account_type text NOT NULL DEFAULT 'USER', CONSTRAINT accounts_pk PRIMARY KEY (id), CONSTRAINT accounts_un UNIQUE (upload_token));"); err != nil {
 		logger.Fatal(err)
+	}
+
+	var amount int
+	if err := db.QueryRow("SELECT count(id) from public.accounts;").Scan(&amount); err != nil {
+		logger.Fatal(err)
+	}
+
+	if amount == 0 {
+		var user User
+		if err := db.QueryRow("INSERT INTO public.accounts (id, account_type) values (1,'ADMIN') RETURNING *;").Scan(&user.Token, &user.Upload_token, &user.Id, &user.Account_type); err != nil {
+			logger.Fatal(err)
+		}
+
+		s, _ := json.MarshalIndent(user, "", "\t")
+		fmt.Println("Created first account: ", string(s))
 	}
 
 	return db
