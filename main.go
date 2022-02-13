@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -139,10 +140,6 @@ func main() {
 		}
 	}))
 
-	http.Handle("/public/",
-		http.StripPrefix("/public/", http.FileServer(http.Dir(config.Static_folder))),
-	)
-
 	indexTemplate, err := template.New("index.html").ParseFiles(config.Template_folder + "index.html")
 	if err != nil {
 		logger.Fatal(err)
@@ -151,7 +148,16 @@ func main() {
 	http.Handle("/", tollbooth.LimitFuncHandler(rateLimiter, func(w http.ResponseWriter, r *http.Request) {
 		logger.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
 
-		if r.URL.Path == "/" {
+		if strings.HasPrefix(r.URL.Path, "/public/") {
+			file_path := config.Static_folder + path.Base(path.Clean(r.URL.Path))
+			if _, err := os.Stat(file_path); err != nil {
+				fmt.Fprintf(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+				return
+			}
+
+			http.ServeFile(w, r, file_path)
+			return
+		} else if r.URL.Path == "/" {
 			if indexTemplate.Execute(w, r.Host) != nil {
 				fmt.Fprintf(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}
@@ -160,7 +166,7 @@ func main() {
 		}
 
 		// Looks in database for uploaded file
-		if db.QueryRow("SELECT FROM public.images WHERE file_name=$1", path.Base(r.URL.Path)).Scan() != nil {
+		if db.QueryRow("SELECT FROM public.images WHERE file_name=$1", path.Base(path.Clean(r.URL.Path))).Scan() != nil {
 			http.Redirect(w, r, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", http.StatusFound)
 			return
 		}
@@ -227,8 +233,11 @@ func prepeare_db(config Config, logger *log.Logger) *sql.DB {
 			logger.Fatal(err)
 		}
 
-		s, _ := json.MarshalIndent(user, "", "\t")
-		fmt.Println("Created first account: ", string(s))
+		json, err := json.MarshalIndent(user, "", "\t")
+		if err != nil {
+			logger.Fatal(err)
+		}
+		fmt.Println("Created first account: ", string(json))
 	}
 
 	return db
