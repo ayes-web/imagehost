@@ -1,5 +1,7 @@
 # Imagehost
 
+The program has only one flag, -c, which specifies config file used. All other settings are in the config file.
+
 ## Docker
 
 Have a look at example_docker.toml.
