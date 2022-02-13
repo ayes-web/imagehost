@@ -37,7 +37,7 @@ func admin_create_user(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 
-	json, err := json.Marshal(new_user)
+	json, err := json.MarshalIndent(new_user, "", "\t")
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

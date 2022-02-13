@@ -1,0 +1,15 @@
+template_folder = "./template/"
+static_folder = "./public/"
+data_folder = "./data/"
+file_name_length = 15
+max_upload_size = 104857600
+postgres_connection_string = "host=localhost port=5432 user=postgres sslmode=disable"
+web_port = "8080"
+
+[s3]
+access_key_id = "ACCESS_KEY_HERE"
+secret_access_key = "SECRET_KEY_HERE"
+bucket = "BUCKET_NAME_HERE"
+region = "BUCKET_REGION_HERE"
+endpoint = "S3_ENDPOINT_HERE"
+cdn_domain = "BUCKET_DOMAIN_HERE"

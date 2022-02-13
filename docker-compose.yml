@@ -14,7 +14,7 @@ services:
         - 8080:80
     volumes:
       - ./imagehost-data:/app/data
-      # - ./config.json:/app/config.json
+      - ./config.toml:/app/config.toml
     depends_on:
       - db
     restart: unless-stopped

@@ -20,9 +20,9 @@ VOLUME [ "/app/data" ]
 EXPOSE 80
 WORKDIR /app
 
-COPY example_docker.json /app/config.json
+COPY example_docker.toml /app/config.toml
 COPY --from=builder /app/imagehost /app/imagehost
 COPY public/ public/
 COPY template/ template/
 
-ENTRYPOINT [ "/app/imagehost", "-c", "/app/config.json" ]
+ENTRYPOINT [ "/app/imagehost", "-c", "/app/config.toml" ]

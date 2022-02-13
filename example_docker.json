@@ -1,9 +1,0 @@
-{
-    "template_folder": "/app/template/",
-    "static_folder": "/app/public/",
-    "data_folder": "/app/data/",
-    "file_name_length": 15,
-    "max_upload_size": 104857600,
-    "postgres_connection_string": "host=db port=5432 user=postgres password=123 database=imagehost sslmode=disable",
-    "port": "80"
-}

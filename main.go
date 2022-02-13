@@ -12,6 +12,7 @@ import (
 	"path"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -30,23 +31,23 @@ type User struct {
 }
 
 type s3_config struct {
-	Access_key_id     string `json:"access_key_id"`
-	Secret_access_key string `json:"secret_access_key"`
-	Bucket            string `json:"bucket"`
-	Region            string `json:"region"`
-	Endpoint          string `json:"endpoint"`
-	CDN_Domain        string `json:"cdn_domain"`
+	Access_key_id     string `toml:"access_key_id"`
+	Secret_access_key string `toml:"secret_access_key"`
+	Bucket            string `toml:"bucket"`
+	Region            string `toml:"region"`
+	Endpoint          string `toml:"endpoint"`
+	CDN_Domain        string `toml:"cdn_domain"`
 }
 type Config struct {
-	Template_folder            string `json:"template_folder"`
-	Static_folder              string `json:"static_folder"`
-	Data_folder                string `json:"data_folder"`
-	File_name_length           int    `json:"file_name_length"`
-	Max_upload_size            int    `json:"max_upload_size"`
-	Postgres_connection_string string `json:"postgres_connection_string"`
-	Port                       string `json:"port"`
+	Template_folder            string `toml:"template_folder"`
+	Static_folder              string `toml:"static_folder"`
+	Data_folder                string `toml:"data_folder"`
+	File_name_length           int    `toml:"file_name_length"`
+	Max_upload_size            int    `toml:"max_upload_size"`
+	Postgres_connection_string string `toml:"postgres_connection_string"`
+	Web_port                   string `toml:"web_port"`
 
-	S3       s3_config `json:"s3"`
+	S3       s3_config `toml:"s3"`
 	s3client *s3.S3
 }
 
@@ -54,16 +55,16 @@ func main() {
 	logger := log.Default()
 
 	var config_location string
-	flag.StringVar(&config_location, "c", "config.json", "Location of config file")
+	flag.StringVar(&config_location, "c", "config.toml", "Location of config file")
 	flag.Parse()
 
-	raw, err := os.ReadFile(config_location)
+	raw_config, err := os.ReadFile(config_location)
 	if err != nil {
 		logger.Fatal(err)
 	}
 
 	var config Config
-	if json.Unmarshal(raw, &config) != nil {
+	if _, err := toml.Decode(string(raw_config), &config); err != nil {
 		logger.Fatal(err)
 	}
 
@@ -171,8 +172,8 @@ func main() {
 		}
 	}))
 
-	logger.Printf("Starting server at http://localhost:%s\n", config.Port)
-	logger.Fatal(http.ListenAndServe(":"+config.Port, nil))
+	logger.Printf("Starting server at http://localhost:%s\n", config.Web_port)
+	logger.Fatal(http.ListenAndServe(":"+config.Web_port, nil))
 }
 
 // Deletes a file
