@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 
@@ -14,34 +12,74 @@ import (
 	"github.com/h2non/filetype"
 )
 
-func is_valid_token(db *sql.DB, token string) (bool, int) {
-	var id int
-	if db.QueryRow("SELECT id FROM accounts WHERE token=$1", token).Scan(&id) != nil {
-		return false, 0
+func (app *Application) isValidToken(token string) (bool, *int, error) {
+	var id *int
+	if err := app.db.QueryRow("SELECT id FROM accounts WHERE token=$1", token).Scan(&id); err != nil {
+		if err.Error() != "sql: no rows in result set" {
+			return false, nil, err
+		}
+
+		return false, nil, nil
 	}
 
-	return true, id
+	return true, id, nil
 }
 
-func is_valid_upload_token(db *sql.DB, token string) (bool, int) {
-	var id int
-	if db.QueryRow("SELECT id FROM accounts WHERE upload_token=$1", token).Scan(&id) != nil {
-		return false, 0
+func (app *Application) isValidUploadToken(token string) (bool, *int, error) {
+	var id *int
+	if err := app.db.QueryRow("SELECT id FROM accounts WHERE upload_token=$1", token).Scan(&id); err != nil {
+		if err.Error() != "sql: no rows in result set" {
+			return false, nil, err
+		}
+
+		return false, nil, nil
 	}
 
-	return true, id
+	return true, id, nil
 }
 
-func file_exists(db *sql.DB, file_name string) bool {
-	if db.QueryRow("SELECT FROM public.images WHERE file_name=$1", file_name).Scan() != nil {
-		return false
+func (app *Application) fileExists(fileName string) (bool, error) {
+	if err := app.db.QueryRow("SELECT FROM public.images WHERE file_name=$1", fileName).Scan(); err != nil {
+		if err.Error() != "sql: no rows in result set" {
+			return false, err
+		}
+
+		return false, nil
 	}
 
-	return true
+	return true, nil
+}
+
+func (app *Application) apiCommons(w http.ResponseWriter, r *http.Request) bool {
+	app.logger.Println(r.URL.Path)
+
+	if r.Method == "POST" {
+		r.Body = http.MaxBytesReader(w, r.Body, app.config.MaxUploadSize)
+
+		if r.ParseMultipartForm(app.config.MaxUploadSize) != nil {
+			http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
+			return false
+		}
+
+		if err := app.db.Ping(); err != nil { // Makes sure database is alive
+			app.logger.Println(err)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return false
+		}
+
+		return true
+	}
+
+	http.NotFound(w, r)
+	return false
 }
 
 // Api for deleting your own account
-func account_delete_api(w http.ResponseWriter, r *http.Request, db *sql.DB, config Config) {
+func (app *Application) accountDeleteApi(w http.ResponseWriter, r *http.Request) {
+	if !app.apiCommons(w, r) {
+		return
+	}
+
 	if !r.Form.Has("token") {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
@@ -49,68 +87,117 @@ func account_delete_api(w http.ResponseWriter, r *http.Request, db *sql.DB, conf
 
 	token := r.FormValue("token")
 
-	result, user_id := is_valid_token(db, token)
-	if !result {
+	result, userId, err := app.isValidToken(token)
+	if err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	} else if !result {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
 	// Gets all images from account
-	rows, err := db.Query("SELECT file_name FROM public.images WHERE file_owner=$1", user_id)
-	if err != nil { // Im guessing this happens when it gets no results
+	rows, err := app.db.Query("SELECT file_name FROM public.images WHERE file_owner=$1", userId)
+	if err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
 	for rows.Next() {
-		var file_name string
-		rows.Scan(&file_name)
+		var fileName string
+		if err = rows.Scan(&fileName); err != nil {
+			app.logger.Println(err)
+			continue
+		}
 
-		delete_file(config, file_name)
+		if err = app.deleteFile(fileName); err != nil {
+			app.logger.Println(err)
+		}
 	}
 
-	db.Exec("DELETE FROM public.images WHERE file_owner=$1", user_id)
+	if _, err = app.db.Exec("DELETE FROM public.images WHERE file_owner=$1", userId); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }
 
-// Api for deleteing 1 image from your account
-func delete_image_api(w http.ResponseWriter, r *http.Request, db *sql.DB, config Config) {
+// Api for deleting 1 image from your account
+func (app *Application) deleteImageApi(w http.ResponseWriter, r *http.Request) {
+	if !app.apiCommons(w, r) {
+		return
+	}
+
 	if !r.Form.Has("upload_token") || !r.Form.Has("file_name") {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	upload_token := r.FormValue("upload_token")
-	file_name := r.FormValue("file_name")
+	uploadToken := r.FormValue("upload_token")
+	fileName := r.FormValue("file_name")
 
 	// Makes sure the upload token is valid
-	result, user_id := is_valid_upload_token(db, upload_token)
-	if !result {
+	result, userId, err := app.isValidUploadToken(uploadToken)
+	if err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	} else if !result {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
 	// Makes sure the image exists
-	if !file_exists(db, file_name) {
+	if exists, err := app.fileExists(fileName); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	} else if !exists {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	delete_file(config, file_name)
-	db.Exec("DELETE FROM public.images WHERE file_name=$1 AND file_owner=$2", file_name, user_id)
-	fmt.Fprintln(w, "Successfully deleted image")
+	if err = app.deleteFile(fileName); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if _, err = app.db.Exec("DELETE FROM public.images WHERE file_name=$1 AND file_owner=$2", fileName, userId); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if _, err = fmt.Fprintln(w, "Successfully deleted image"); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }
 
 // Api for uploading image
-func upload_image_api(w http.ResponseWriter, r *http.Request, db *sql.DB, config Config, logger *log.Logger) {
+func (app *Application) uploadImageApi(w http.ResponseWriter, r *http.Request) {
+	if !app.apiCommons(w, r) {
+		return
+	}
+
 	if !r.Form.Has("upload_token") {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	upload_token := r.FormValue("upload_token")
+	uploadToken := r.FormValue("upload_token")
 
 	// Makes sure the token is valid
-	result, user_id := is_valid_upload_token(db, upload_token)
-	if !result {
+	result, userId, err := app.isValidUploadToken(uploadToken)
+	if err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	} else if !result {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
@@ -123,6 +210,7 @@ func upload_image_api(w http.ResponseWriter, r *http.Request, db *sql.DB, config
 
 	file, err := io.ReadAll(fileRaw) // Reads the file into file variable
 	if err != nil {
+		app.logger.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
@@ -132,51 +220,58 @@ func upload_image_api(w http.ResponseWriter, r *http.Request, db *sql.DB, config
 		return
 	}
 
-	extension, err := filetype.Get(file)
+	fullFileName, err := app.generateFullFileName(file)
 	if err != nil {
+		app.logger.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	full_file_name := generate_file_name(config.File_name_length) + "."
-
-	if extension.Extension == "unknown" { // Unknown file type defaults to txt
-		full_file_name += "txt"
-	} else {
-		full_file_name += extension.Extension
-	}
-
-	if config.s3client == nil { // Uploads to local storage
-		if err := os.WriteFile(config.Data_folder+full_file_name, file, 0644); err != nil {
-			logger.Fatal(err)
+	if app.s3client == nil { // Uploads to local storage
+		if err = os.WriteFile(app.config.DataFolder+fullFileName, file, 0644); err != nil {
+			app.logger.Println(err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
 	} else { // Uploads to bucket
-		if _, err := config.s3client.PutObject(&s3.PutObjectInput{
+		if _, err = app.s3client.PutObject(&s3.PutObjectInput{
 			Body:   bytes.NewReader(file),
-			Bucket: aws.String(config.S3.Bucket),
-			Key:    aws.String(full_file_name),
+			Bucket: aws.String(app.config.S3.Bucket),
+			Key:    aws.String(fullFileName),
 		}); err != nil {
-			logger.Fatal(err)
+			app.logger.Println(err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if _, err = db.Query(`INSERT INTO public.images (file_name, file_owner) VALUES ($1, $2)`, full_file_name, user_id); err != nil {
+	if _, err = app.db.Query(`INSERT INTO public.images (file_name, file_owner) VALUES ($1, $2)`, fullFileName, userId); err != nil {
+		app.logger.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	fileRaw.Close()
+	if err = fileRaw.Close(); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 
-	http.Redirect(w, r, "https://"+r.Host+"/"+full_file_name, http.StatusFound)
-	fmt.Fprintln(w, "https://"+r.Host+"/"+full_file_name)
+	http.Redirect(w, r, "https://"+r.Host+"/"+fullFileName, http.StatusFound)
+
+	if _, err = fmt.Fprintln(w, "https://"+r.Host+"/"+fullFileName); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }
 
 // Api for changing your upload token
-func new_upload_token_api(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func (app *Application) newUploadTokenApi(w http.ResponseWriter, r *http.Request) {
+	if !app.apiCommons(w, r) {
+		return
+	}
+
 	if !r.Form.Has("token") {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
@@ -184,16 +279,31 @@ func new_upload_token_api(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 	token := r.FormValue("token")
 
-	if result, _ := is_valid_token(db, token); !result {
+	valid, _, err := app.isValidToken(token)
+	if err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	} else if !valid {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
-	var new_token string
-	if db.QueryRow("UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token", token).Scan(&new_token) != nil {
+	var newToken string
+	if err = app.db.QueryRow("UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token", token).Scan(&newToken); err != nil {
+		if err.Error() != "sql: no rows in result set" {
+			app.logger.Println(err)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
-	fmt.Fprintln(w, new_token)
+	if _, err = fmt.Fprintln(w, newToken); err != nil {
+		app.logger.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 }

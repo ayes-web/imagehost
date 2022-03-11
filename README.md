@@ -4,8 +4,7 @@ The program has only one flag, -c, which specifies config file used. All other s
 
 ## Docker
 
-Have a look at example_docker.toml.
-By default it uses that config.
+Have a look at example_docker.toml. By default, it uses that config.
 
 ## Without docker
 

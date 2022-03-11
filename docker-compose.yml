@@ -11,7 +11,7 @@ services:
       - UMASK=002
       - TZ=Etc/UTC
     ports:
-        - 8080:80
+      - "8080:80"
     volumes:
       - ./imagehost-data:/app/data
       # - ./config.toml:/app/config.toml
@@ -23,7 +23,7 @@ services:
     container_name: postgres_imagehost
     image: postgres
     ports:
-      - 5433:5432
+      - "5433:5432"
     environment:
       - POSTGRES_PASSWORD=123
       - POSTGRES_USER=postgres

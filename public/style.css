@@ -1,5 +1,5 @@
 body {
-    font-family: 'Comic Sans MS'
+    font-family: 'Comic Sans MS', sans-serif
 }
 
 .container {
@@ -11,16 +11,25 @@ body {
     float: right;
 }
 
+a {
+    text-decoration: none;
+    color: #0c45c1;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
 @media (prefers-color-scheme: dark) {
     body {
         background-color: #1e1e1e;
         color: white
     }
-    
+
     a {
         color: #359cea;
     }
-    
+
     a:visited {
         color: orange;
     }
