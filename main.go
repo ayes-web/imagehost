@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,8 +9,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
+	"database/sql"
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -24,12 +27,16 @@ import (
 )
 
 type Application struct {
-	logger          *log.Logger
+	logError   *log.Logger
+	logWarning *log.Logger
+	logInfo    *log.Logger
+
 	apiListTemplate *template.Template
 	indexTemplate   *template.Template
-	config          Config
-	db              *sql.DB
-	s3client        *s3.S3
+
+	config   Config
+	db       *sql.DB
+	s3client *s3.S3
 }
 
 type Config struct {
@@ -60,9 +67,33 @@ type User struct {
 	AccountType string
 }
 
+type Logger struct{}
+
+func (f Logger) Write(p []byte) (n int, err error) {
+	pc, file, line, ok := runtime.Caller(4)
+	if !ok {
+		file = "?"
+		line = 0
+	}
+
+	fn := runtime.FuncForPC(pc)
+	var fnName string
+	if fn == nil {
+		fnName = "?()"
+	} else {
+		dotName := filepath.Ext(fn.Name())
+		fnName = strings.TrimLeft(dotName, ".") + "()"
+	}
+
+	log.Printf("%s:%d %s: %s", filepath.Base(file), line, fnName, p)
+	return len(p), nil
+}
+
 func main() {
 	app := Application{
-		logger: log.Default(),
+		logError:   log.New(Logger{}, "ERROR: ", 0),
+		logWarning: log.New(Logger{}, "WARN: ", 0),
+		logInfo:    log.New(Logger{}, "INFO: ", 0),
 	}
 
 	var configLocation string
@@ -89,32 +120,32 @@ func main() {
 	http.Handle("/public/", tollbooth.LimitFuncHandler(rateLimiter, app.publicFiles))
 	http.Handle("/", tollbooth.LimitFuncHandler(rateLimiter, app.indexPage))
 
-	app.logger.Printf("Starting server at http://localhost:%s\n", app.config.WebPort)
-	app.logger.Fatal(http.ListenAndServe(":"+app.config.WebPort, nil))
+	app.logInfo.Printf("Starting server at http://localhost:%s\n", app.config.WebPort)
+	app.logError.Fatal(http.ListenAndServe(":"+app.config.WebPort, nil))
 }
 
 func (app *Application) initializeConfig(configLocation string) {
 	rawConfig, err := os.ReadFile(configLocation)
 	if err != nil {
-		app.logger.Fatal(err)
+		app.logError.Fatal(err)
 	}
 
 	if _, err = toml.Decode(string(rawConfig), &app.config); err != nil {
-		app.logger.Fatal(err)
+		app.logError.Fatal(err)
 	}
 
 	if app.config.S3 == (s3Config{}) {
-		app.logger.Println("Storing files in", app.config.DataFolder)
+		app.logInfo.Println("Storing files in", app.config.DataFolder)
 
 		if file, _ := os.Stat(app.config.DataFolder); file == nil {
-			app.logger.Println("Creating data folder")
+			app.logInfo.Println("Creating data folder")
 
 			if err = os.Mkdir(app.config.DataFolder, 0777); err != nil {
-				app.logger.Fatal(err)
+				app.logError.Fatal(err)
 			}
 		}
 	} else {
-		app.logger.Println("Storing files in s3 bucket")
+		app.logInfo.Println("Storing files in s3 bucket")
 		app.prepareS3()
 	}
 }
@@ -123,12 +154,12 @@ func (app *Application) setupTemplates() {
 	var err error
 	app.apiListTemplate, err = template.New("api_list.html").ParseFiles(app.config.TemplateFolder + "api_list.html")
 	if err != nil {
-		app.logger.Fatal(err)
+		app.logInfo.Fatal(err)
 	}
 
 	app.indexTemplate, err = template.New("index.html").ParseFiles(app.config.TemplateFolder + "index.html")
 	if err != nil {
-		app.logger.Fatal(err)
+		app.logInfo.Fatal(err)
 	}
 }
 
@@ -140,7 +171,7 @@ func (app *Application) prepareS3() {
 		Region:           aws.String(app.config.S3.Region),
 		S3ForcePathStyle: aws.Bool(true),
 	}); err != nil {
-		app.logger.Fatal(err)
+		app.logInfo.Fatal(err)
 	} else {
 		app.s3client = s3.New(s3session)
 	}
@@ -149,37 +180,65 @@ func (app *Application) prepareS3() {
 // Makes sure db is correctly setup and connects to it
 func (app *Application) prepareDb() {
 	var err error
+
 	app.db, err = sql.Open("postgres", app.config.PostgresConnectionString)
 	if err != nil {
-		app.logger.Fatal(err)
+		app.logInfo.Fatal(err)
 	}
 
-	if _, err = app.db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`); err != nil {
-		app.logger.Fatal(err)
-	}
-	if _, err = app.db.Exec("CREATE TABLE IF NOT EXISTS public.images (file_name varchar NOT NULL, created_date timestamptz NOT NULL DEFAULT now(), file_owner int4 NOT NULL, CONSTRAINT images_un UNIQUE (file_name));"); err != nil {
-		app.logger.Fatal(err)
-	}
-	if _, err = app.db.Exec("CREATE TABLE IF NOT EXISTS public.accounts (token uuid NOT NULL DEFAULT uuid_generate_v4(), upload_token uuid NOT NULL DEFAULT uuid_generate_v4(), id serial4 NOT NULL, account_type text NOT NULL DEFAULT 'USER', CONSTRAINT accounts_pk PRIMARY KEY (id), CONSTRAINT accounts_un UNIQUE (upload_token));"); err != nil {
-		app.logger.Fatal(err)
-	}
-
-	var amount int
-	if err = app.db.QueryRow("SELECT count(id) from public.accounts;").Scan(&amount); err != nil {
-		app.logger.Fatal(err)
+	if _, err = app.db.Exec(`
+		DO $$
+		BEGIN
+    		IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'account_type') THEN
+        		CREATE TYPE account_type AS ENUM ('USER', 'ADMIN');
+    		END IF;
+		END
+		$$;
+	`); err != nil {
+		app.logInfo.Fatal(err)
 	}
 
-	if amount == 0 {
-		var user User
-		if err = app.db.QueryRow("INSERT INTO public.accounts (id, account_type) values (1,'ADMIN') RETURNING *;").Scan(&user.Token, &user.UploadToken, &user.Id, &user.AccountType); err != nil {
-			app.logger.Fatal(err)
-		}
+	if _, err = app.db.Exec(`
+		CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+	`); err != nil {
+		app.logInfo.Fatal(err)
+	}
 
-		if data, err := json.MarshalIndent(user, "", "\t"); err != nil {
-			app.logger.Fatal(err)
-		} else {
-			fmt.Println("Created first account: ", string(data))
-		}
+	if _, err = app.db.Exec(`
+		CREATE TABLE IF NOT EXISTS public.images (
+			file_name varchar NOT NULL, 
+			created_date timestamptz NOT NULL DEFAULT now(), 
+			file_uploader integer NOT NULL,
+			CONSTRAINT images_un UNIQUE (file_name)
+		);
+	`); err != nil {
+		app.logInfo.Fatal(err)
+	}
+
+	if _, err = app.db.Exec(`
+		CREATE TABLE IF NOT EXISTS public.accounts (
+			token uuid NOT NULL DEFAULT uuid_generate_v4(), 
+			upload_token uuid NOT NULL DEFAULT uuid_generate_v4(), 
+			id serial4 NOT NULL, 
+			account_type account_type NOT NULL DEFAULT 'USER'::account_type, 
+			CONSTRAINT accounts_pk PRIMARY KEY (id), 
+			CONSTRAINT accounts_un UNIQUE (upload_token)
+		);
+	`); err != nil {
+		app.logInfo.Fatal(err)
+	}
+
+	var user User
+	if app.db.QueryRow(`
+		INSERT INTO public.accounts (id, account_type) values (1, 'ADMIN'::account_type) RETURNING *;
+	`).Scan(&user.Token, &user.UploadToken, &user.Id, &user.AccountType) != nil {
+		return
+	}
+
+	if data, err := json.MarshalIndent(user, "", "\t"); err != nil {
+		app.logInfo.Fatal(err)
+	} else {
+		fmt.Println("Created first account: ", string(data))
 	}
 }
 

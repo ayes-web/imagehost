@@ -7,21 +7,21 @@ import (
 )
 
 func (app *Application) apiList(w http.ResponseWriter, r *http.Request) {
-	app.logger.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
+	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
 
 	if err := app.apiListTemplate.Execute(w, r.Host); err != nil {
-		app.logger.Println(err)
+		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 }
 
 func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
-	app.logger.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
+	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
 
 	if r.URL.Path == "/" {
 		if err := app.indexTemplate.Execute(w, r.Host); err != nil {
-			app.logger.Println(err)
+			app.logError.Println(err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 
@@ -37,7 +37,7 @@ func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
 
 	// Looks in database for uploaded file
 	if exists, err := app.fileExists(path.Base(path.Clean(r.URL.Path))); err != nil {
-		app.logger.Println(err)
+		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	} else if !exists {
@@ -53,7 +53,7 @@ func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) publicFiles(w http.ResponseWriter, r *http.Request) {
-	app.logger.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
+	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
 
 	filePath := app.config.StaticFolder + path.Base(path.Clean(r.URL.Path))
 	if _, err := os.Stat(filePath); err != nil {

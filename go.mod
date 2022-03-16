@@ -1,6 +1,6 @@
 module imagehost
 
-go 1.17
+go 1.18
 
 require (
 	github.com/BurntSushi/toml v1.0.0
@@ -13,8 +13,10 @@ require (
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-pkgz/expirable-cache v0.0.3 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/stretchr/testify v1.7.0 // indirect
 	golang.org/x/time v0.0.0-20220224211638-0e9765cccd65 // indirect
 )
