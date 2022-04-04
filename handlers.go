@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 )
 
 func (app *Application) apiList(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +32,7 @@ func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
 	// Looks if file exists in public folder then redirects there
 	filePath := app.config.StaticFolder + path.Clean(r.URL.Path)
 	if _, err := os.Stat(filePath); err == nil {
-		http.Redirect(w, r, "/public/"+path.Clean(r.URL.Path), http.StatusPermanentRedirect)
+		http.Redirect(w, r, path.Join("/public/", path.Clean(r.URL.Path)), http.StatusPermanentRedirect)
 		return
 	}
 
@@ -45,17 +46,17 @@ func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if app.s3client == nil {
-		http.ServeFile(w, r, app.config.DataFolder+path.Clean(r.URL.Path))
-	} else {
+	if app.isUsingS3() {
 		http.Redirect(w, r, "https://"+app.config.S3.CdnDomain+"/file/"+app.config.S3.Bucket+path.Clean(r.URL.Path), http.StatusFound)
+	} else {
+		http.ServeFile(w, r, filepath.Join(app.config.DataFolder, path.Clean(r.URL.Path)))
 	}
 }
 
 func (app *Application) publicFiles(w http.ResponseWriter, r *http.Request) {
 	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
 
-	filePath := app.config.StaticFolder + path.Base(path.Clean(r.URL.Path))
+	filePath := filepath.Join(app.config.StaticFolder, path.Base(path.Clean(r.URL.Path)))
 	if _, err := os.Stat(filePath); err != nil {
 		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 		return

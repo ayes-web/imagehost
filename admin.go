@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -14,7 +16,7 @@ func (app *Application) isAdmin(token string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := app.db.QueryRowContext(ctx, "SELECT token FROM accounts WHERE token=$1 AND account_type='ADMIN'::account_type; ", token).Scan(&result); err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}
 
@@ -45,7 +47,7 @@ func (app *Application) adminCreateUser(w http.ResponseWriter, r *http.Request) 
 	var newUser User
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := app.db.QueryRowContext(ctx, "INSERT INTO public.accounts DEFAULT values RETURNING token, upload_token, id, account_type").Scan(&newUser.Token, &newUser.UploadToken, &newUser.Id, &newUser.AccountType); err != nil {
+	if err := app.db.QueryRowContext(ctx, "INSERT INTO public.accounts DEFAULT values RETURNING token, upload_token, id, account_type").Scan(&newUser.Token, &newUser.UploadToken, &newUser.ID, &newUser.AccountType); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
