@@ -42,5 +42,5 @@ func (app *Application) deleteFileS3(fileName string) (err error) {
 }
 
 func (app *Application) isUsingS3() bool {
-	return app.s3client == nil
+	return app.s3client != nil
 }

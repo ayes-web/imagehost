@@ -45,6 +45,7 @@ func (app *Application) isValidUploadToken(token string) (bool, *int, error) {
 	return true, id, nil
 }
 
+// Looks if file exists in database
 func (app *Application) fileExists(fileName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -60,51 +61,32 @@ func (app *Application) fileExists(fileName string) (bool, error) {
 	return true, nil
 }
 
-func (app *Application) apiCommons(w http.ResponseWriter, r *http.Request) bool {
-	app.logInfo.Println(r.URL.Path)
-
-	if r.Method != "POST" {
-		http.NotFound(w, r)
-		return false
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, app.config.MaxUploadSize)
-	if r.ParseMultipartForm(app.config.MaxUploadSize) != nil {
-		http.Error(w, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
-		return false
-	}
-
+// gets user id by token
+func (app *Application) idByToken(token string) (id int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := app.db.PingContext(ctx); err != nil { // Makes sure database is alive
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return false
-	}
 
-	return true
+	err = app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE token=$1", token).Scan(&id)
+
+	return
+}
+
+// gets user id by upload token
+func (app *Application) idByUploadToken(uploadToken string) (id int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err = app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE upload_token=$1", uploadToken).Scan(&id)
+
+	return
 }
 
 // Api for deleting your own account
 func (app *Application) accountDeleteAPI(w http.ResponseWriter, r *http.Request) {
-	if !app.apiCommons(w, r) {
-		return
-	}
-
-	if !r.Form.Has("token") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	token := r.FormValue("token")
-
-	result, userID, err := app.isValidToken(token)
+	userID, err := app.idByToken(r.FormValue("token"))
 	if err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !result {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
@@ -138,30 +120,15 @@ func (app *Application) accountDeleteAPI(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// Api for deleting 1 image from your account
+// Api for deleting an image from your account
 func (app *Application) deleteImageAPI(w http.ResponseWriter, r *http.Request) {
-	if !app.apiCommons(w, r) {
-		return
-	}
-
-	if !r.Form.Has("upload_token") || !r.Form.Has("file_name") {
+	if !r.Form.Has("file_name") {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	uploadToken := r.FormValue("upload_token")
 	fileName := r.FormValue("file_name")
-
-	// Makes sure the upload token is valid
-	result, userID, err := app.isValidUploadToken(uploadToken)
-	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !result {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
+	uploadToken := r.FormValue("upload_token")
 
 	// Makes sure the image exists
 	if exists, err := app.fileExists(fileName); err != nil {
@@ -173,15 +140,21 @@ func (app *Application) deleteImageAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var err error
 	if err = app.deleteFile(fileName); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err = app.db.ExecContext(ctx, "DELETE FROM public.images WHERE file_name=$1 AND file_uploader=$2", fileName, userID); err != nil {
+	userID, err := app.idByUploadToken(uploadToken)
+	if err != nil {
+		app.logError.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if err = app.deleteImage(fileName, userID); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -196,27 +169,7 @@ func (app *Application) deleteImageAPI(w http.ResponseWriter, r *http.Request) {
 
 // Api for uploading image
 func (app *Application) uploadImageAPI(w http.ResponseWriter, r *http.Request) {
-	if !app.apiCommons(w, r) {
-		return
-	}
-
-	if !r.Form.Has("upload_token") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
 	uploadToken := r.FormValue("upload_token")
-
-	// Makes sure the token is valid
-	result, userID, err := app.isValidUploadToken(uploadToken)
-	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !result {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
 
 	fileRaw, _, err := r.FormFile("file")
 	if err != nil { // Occurs when user doesn't provide a file
@@ -255,9 +208,14 @@ func (app *Application) uploadImageAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err = app.db.QueryContext(ctx, `INSERT INTO public.images (file_name, file_uploader) VALUES ($1, $2)`, fullFileName, userID); err != nil {
+	userID, err := app.idByUploadToken(uploadToken)
+	if err != nil {
+		app.logError.Println(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if err = app.insertNewImage(fullFileName, userID); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -274,31 +232,12 @@ func (app *Application) uploadImageAPI(w http.ResponseWriter, r *http.Request) {
 
 // Api for changing your upload token
 func (app *Application) newUploadTokenAPI(w http.ResponseWriter, r *http.Request) {
-	if !app.apiCommons(w, r) {
-		return
-	}
-
-	if !r.Form.Has("token") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
 	token := r.FormValue("token")
-
-	valid, _, err := app.isValidToken(token)
-	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !valid {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
 
 	var newToken string
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err = app.db.QueryRowContext(ctx, "UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token", token).Scan(&newToken); err != nil {
+	if err := app.db.QueryRowContext(ctx, "UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token", token).Scan(&newToken); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			app.logError.Println(err)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -309,7 +248,7 @@ func (app *Application) newUploadTokenAPI(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, err = fmt.Fprintln(w, newToken); err != nil {
+	if _, err := fmt.Fprintln(w, newToken); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

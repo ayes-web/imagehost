@@ -6,14 +6,10 @@ COPY go.mod .
 COPY go.sum .
 RUN go mod download
 
-COPY admin.go .
-COPY api.go .
-COPY auto_deletion.go .
-COPY handlers.go .
-COPY main.go .
+COPY *.go .
 
 RUN go build -o /app/imagehost
-RUN rm go.mod go.sum admin.go api.go auto_deletion.go handlers.go main.go
+RUN rm go.mod go.sum *.go
 
 FROM alpine:3.15
 

@@ -8,8 +8,6 @@ import (
 )
 
 func (app *Application) apiList(w http.ResponseWriter, r *http.Request) {
-	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
-
 	if err := app.apiListTemplate.Execute(w, r.Host); err != nil {
 		app.logError.Println(err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -18,8 +16,6 @@ func (app *Application) apiList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
-	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
-
 	if r.URL.Path == "/" {
 		if err := app.indexTemplate.Execute(w, r.Host); err != nil {
 			app.logError.Println(err)
@@ -54,9 +50,8 @@ func (app *Application) indexPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) publicFiles(w http.ResponseWriter, r *http.Request) {
-	app.logInfo.Println(r.URL.Path, r.Header.Get("X-Forwarded-For"))
-
 	filePath := filepath.Join(app.config.StaticFolder, path.Base(path.Clean(r.URL.Path)))
+
 	if _, err := os.Stat(filePath); err != nil {
 		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 		return

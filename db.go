@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 )
 
 const accountRolesEnumCreation = `
@@ -44,6 +46,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 `
 
 func (app *Application) prepareDb() {
+	app.logInfo.Println("Setting up database")
 	var err error
 
 	app.db, err = sql.Open("postgres", app.config.PostgresConnectionString)
@@ -77,4 +80,28 @@ func (app *Application) prepareDb() {
 	} else {
 		app.logInfo.Println("Created first account: ", string(data))
 	}
+}
+
+const deleteImageQuery = `
+DELETE FROM public.images WHERE file_name=$1 AND file_uploader=$2
+`
+
+func (app *Application) deleteImage(fileName string, userID int) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err = app.db.ExecContext(ctx, deleteImageQuery, fileName, userID)
+	return
+}
+
+const insertNewImageQuery = `
+INSERT INTO public.images (file_name, file_uploader) VALUES ($1, $2)
+`
+
+func (app *Application) insertNewImage(fileName string, userID int) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err = app.db.QueryContext(ctx, insertNewImageQuery, fileName, userID)
+	return
 }

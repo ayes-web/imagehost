@@ -16,7 +16,7 @@ func (app *Application) isAdmin(token string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := app.db.QueryRowContext(ctx, "SELECT token FROM accounts WHERE token=$1 AND account_type='ADMIN'::account_type; ", token).Scan(&result); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if !errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}
 
@@ -28,22 +28,6 @@ func (app *Application) isAdmin(token string) (bool, error) {
 
 // Admin api for creating new user
 func (app *Application) adminCreateUser(w http.ResponseWriter, r *http.Request) {
-	if !r.Form.Has("token") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	token := r.FormValue("token")
-
-	if admin, err := app.isAdmin(token); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !admin {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-
 	var newUser User
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -69,22 +53,12 @@ func (app *Application) adminCreateUser(w http.ResponseWriter, r *http.Request) 
 
 // Admin api for deleting user
 func (app *Application) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if !r.Form.Has("token") || !r.Form.Has("id") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	if !r.Form.Has("id") {
+		http.Error(w, "Missing id field", http.StatusBadRequest)
 		return
 	}
 
-	token := r.FormValue("token")
 	id := r.FormValue("id")
-
-	if admin, err := app.isAdmin(token); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	} else if !admin {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
