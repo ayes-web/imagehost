@@ -1,24 +1,89 @@
 package main
 
 import (
+	"context"
+	"embed"
+	"encoding/json"
+	"errors"
+	"flag"
 	"github.com/BurntSushi/toml"
-	"github.com/gorilla/mux"
+	"github.com/didip/tollbooth/v6"
+	"github.com/didip/tollbooth/v6/limiter"
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
-func (app *Application) setupLogging() {
-	flags := log.Ldate | log.Ltime | log.Lshortfile | log.Lmsgprefix
+var ErrUnknownStorageMethod = errors.New("unknown file storage method")
 
-	app.logInfo = log.New(os.Stdout, "INFO: ", flags)
-	app.logError = log.New(os.Stdout, "ERROR: ", flags)
+//go:embed templates/*
+var templateFiles embed.FS
 
-	app.logInfo.Println("Setup logging")
+//go:embed public/*
+var publicFiles embed.FS
+
+func PublicFiles() http.FileSystem {
+	sub, err := fs.Sub(publicFiles, "public")
+	if err != nil {
+		panic(err)
+	}
+
+	return http.FS(sub)
 }
 
-func (app *Application) initializeConfig(configLocation string) {
+func (app *Application) prepareDb() {
+	app.logInfo.Println("Setting up database")
+
+	var err error
+	app.db, err = pgxpool.Connect(context.Background(), app.config.PostgresConnectionString)
+	if err != nil {
+		app.logError.Fatal(err)
+	}
+
+	initQueries := &pgx.Batch{}
+	initQueries.Queue(accountRolesEnumCreation)
+	initQueries.Queue(postgresExtensionQuery)
+	initQueries.Queue(imagesTableCreation)
+	initQueries.Queue(accountsTableCreation)
+
+	batchResult := app.db.SendBatch(context.Background(), initQueries)
+	if _, err = batchResult.Exec(); err != nil {
+		app.logError.Fatal(err)
+	}
+
+	if err = batchResult.Close(); err != nil {
+		app.logError.Fatal(err)
+	}
+
+	if _, err = app.getUserByID(1); errors.Is(err, pgx.ErrNoRows) { // if doesnt find account id 1 creates it
+		var user accountModel
+		user, err = app.createNewAdmin()
+		if err != nil {
+			app.logError.Fatal(err)
+		}
+
+		var jsonData []byte
+		if jsonData, err = json.MarshalIndent(user, "", "\t"); err != nil {
+			app.logError.Fatal(err)
+		} else {
+			app.logInfo.Println("Created first account: ", string(jsonData))
+		}
+	} else if err != nil {
+		app.logError.Fatal(err)
+	}
+}
+
+func (app *Application) initializeConfig() {
+	var configLocation string
+	flag.StringVar(&configLocation, "c", "config.toml", "Location of config file")
+	flag.Parse()
+
 	rawConfig, err := os.ReadFile(configLocation)
 	if err != nil {
 		app.logError.Fatal(err)
@@ -28,7 +93,17 @@ func (app *Application) initializeConfig(configLocation string) {
 		app.logError.Fatal(err)
 	}
 
-	if app.config.S3 == (s3Config{}) {
+	if app.config.S3 != (s3Config{}) {
+		app.fileStorageMethod = fileStorageS3
+	} else {
+		app.fileStorageMethod = fileStorageLocal
+	}
+
+	switch app.fileStorageMethod {
+	case fileStorageS3:
+		app.logInfo.Println("Storing files in s3 bucket")
+		app.prepareS3()
+	case fileStorageLocal:
 		app.logInfo.Println("Storing files in", app.config.DataFolder)
 
 		if file, _ := os.Stat(app.config.DataFolder); file == nil {
@@ -38,56 +113,84 @@ func (app *Application) initializeConfig(configLocation string) {
 				app.logError.Fatal(err)
 			}
 		}
-	} else {
-		app.logInfo.Println("Storing files in s3 bucket")
-		app.prepareS3()
+	default:
+		app.logError.Fatal(ErrUnknownStorageMethod)
 	}
 }
 
-func (app *Application) setupTemplates() {
-	app.logInfo.Println("Setting up templates")
-
-	var err error
-	app.apiListTemplate, err = template.New("api_list.html").ParseFiles(app.config.TemplateFolder + "api_list.html")
-	if err != nil {
-		app.logInfo.Fatal(err)
-	}
-
-	app.indexTemplate, err = template.New("index.html").ParseFiles(app.config.TemplateFolder + "index.html")
-	if err != nil {
-		app.logInfo.Fatal(err)
-	}
-}
-
-func (app *Application) initializeRouter() (r *mux.Router) {
+func (app *Application) initializeRouter() {
 	app.logInfo.Println("Setting up router")
-	r = mux.NewRouter()
+	gin.SetMode(gin.ReleaseMode)
+	app.Router = gin.Default()
 
-	r.Use(app.ratelimitMiddleware)
-	r.Use(app.bodySizeMiddleware)
-	r.Use(app.loggingMiddleware)
+	app.Router.Use(app.bodySizeMiddleware())
 
-	api := r.PathPrefix("/api").Subrouter()
-	api.Use(app.apiMiddleware)
+	api := app.Router.Group("/api")
+	api.Use(app.apiMiddleware())
 
-	miscAPI := api.PathPrefix("/").Subrouter()
-	miscAPI.Use(app.uploadTokenVerificationMiddleware)
-	miscAPI.HandleFunc("/upload", app.uploadImageAPI).Methods(http.MethodPost)
-	miscAPI.HandleFunc("/delete", app.deleteImageAPI).Methods(http.MethodPost)
+	miscAPI := api.Group("/")
+	miscAPI.Use(
+		hasUploadTokenMiddleware(),
+		app.uploadTokenVerificationMiddleware(),
+	)
 
-	accountAPI := api.PathPrefix("/account").Subrouter()
-	accountAPI.Use(app.userVerificationMiddleware)
-	accountAPI.HandleFunc("/new_upload_token", app.newUploadTokenAPI).Methods(http.MethodPost)
-	accountAPI.HandleFunc("/delete", app.accountDeleteAPI).Methods(http.MethodPost)
+	miscAPI.POST("/upload", app.uploadImageAPI).Use()
+	miscAPI.POST("/delete", app.deleteImageAPI)
 
-	adminAPI := api.PathPrefix("/admin").Subrouter()
-	adminAPI.Use(app.adminVerificationMiddleware)
-	adminAPI.HandleFunc("/create_user", app.adminCreateUser).Methods(http.MethodPost)
-	adminAPI.HandleFunc("/delete_user", app.adminCreateUser).Methods(http.MethodPost)
+	accountAPI := api.Group("/account")
+	accountAPI.Use(
+		hasTokenMiddleware(),
+		app.userTokenVerificationMiddleware(),
+	)
 
-	r.Path("/api_list").HandlerFunc(app.apiList).Methods(http.MethodGet)
+	accountAPI.POST("/new_upload_token", app.newUploadTokenAPI)
+	accountAPI.POST("/delete", app.accountDeleteAPI)
 
-	r.PathPrefix("/public/").HandlerFunc(app.publicFiles).Methods(http.MethodGet)
-	r.PathPrefix("/").HandlerFunc(app.indexPage).Methods(http.MethodGet)
+	adminAPI := api.Group("/admin")
+	adminAPI.Use(
+		hasTokenMiddleware(),
+		app.adminTokenVerificationMiddleware(),
+	)
+
+	adminAPI.POST("/create_user", app.adminCreateUser)
+	adminAPI.POST("/delete_user", app.adminDeleteUser)
+
+	app.Router.GET("/api_list", app.apiList)
+
+	app.Router.StaticFS("/public/", PublicFiles())
+
+	app.Router.GET("/", app.indexPage)
+
+	app.Router.Use(app.ratelimitMiddleware())
+	app.Router.NoRoute(app.indexFiles)
+
+	return
+}
+
+func setupLogging() *Logger {
+	flags := log.Ldate | log.Ltime | log.Lshortfile | log.Lmsgprefix
+
+	return &Logger{
+		logInfo:    log.New(os.Stdout, "INFO: ", flags),
+		logError:   log.New(os.Stdout, "ERROR: ", flags),
+		logWarning: log.New(os.Stdout, "WARN: ", flags),
+	}
+}
+func setupTemplates() *Templates {
+	return &Templates{
+		apiListTemplate: template.Must(template.New("api_list.gohtml").ParseFS(
+			templateFiles,
+			"templates/api_list.gohtml",
+		)),
+		indexTemplate: template.Must(template.New("index.gohtml").ParseFS(
+			templateFiles,
+			"templates/index.gohtml",
+		)),
+	}
+}
+func setupRatelimiting() (rateLimiter *limiter.Limiter) {
+	rateLimiter = tollbooth.NewLimiter(2, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
+	rateLimiter.SetIPLookups([]string{"X-Forwarded-For", "RemoteAddr", "X-Real-IP"})
+
 	return
 }

@@ -14,7 +14,7 @@ services:
       - "8080:80"
     volumes:
       - ./imagehost-data:/app/data
-      # - ./config.toml:/app/config.toml
+      # - ./example_docker.toml:/app/config.toml
     depends_on:
       - db
     restart: unless-stopped

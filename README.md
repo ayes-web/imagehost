@@ -4,13 +4,11 @@ The program has only one flag, -c, which specifies config file used. All other s
 
 ## Docker
 
-Have a look at example_docker.toml. By default, it uses that config.
+Use example_docker.toml
 
 ## Without docker
 
-Use example_local.toml as base config.
-
-There's a handy build script, it puts assets and binary into bin/build.tar.gz
+Use example_local.toml
 
 ## S3/B2 bucket
 

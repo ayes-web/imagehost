@@ -1,256 +1,163 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"errors"
-	"fmt"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/jackc/pgx/v4"
 	"io"
 	"net/http"
 	"os"
-	"time"
-
-	"github.com/h2non/filetype"
 )
 
-func (app *Application) isValidToken(token string) (bool, *int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	var id *int
-	if err := app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE token=$1", token).Scan(&id); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return false, nil, err
-		}
-
-		return false, nil, nil
-	}
-
-	return true, id, nil
-}
-
-func (app *Application) isValidUploadToken(token string) (bool, *int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	var id *int
-	if err := app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE upload_token=$1", token).Scan(&id); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return false, nil, err
-		}
-
-		return false, nil, nil
-	}
-
-	return true, id, nil
-}
-
-// Looks if file exists in database
-func (app *Application) fileExists(fileName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	if err := app.db.QueryRowContext(ctx, "SELECT FROM public.images WHERE file_name=$1", fileName).Scan(); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return false, err
-		}
-
-		return false, nil
-	}
-
-	return true, nil
-}
-
-// gets user id by token
-func (app *Application) idByToken(token string) (id int, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	err = app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE token=$1", token).Scan(&id)
-
-	return
-}
-
-// gets user id by upload token
-func (app *Application) idByUploadToken(uploadToken string) (id int, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	err = app.db.QueryRowContext(ctx, "SELECT id FROM accounts WHERE upload_token=$1", uploadToken).Scan(&id)
-
-	return
-}
-
 // Api for deleting your own account
-func (app *Application) accountDeleteAPI(w http.ResponseWriter, r *http.Request) {
-	userID, err := app.idByToken(r.FormValue("token"))
+func (app *Application) accountDeleteAPI(c *gin.Context) {
+	userID, err := app.idByToken(c.GetString("token"))
+	if errors.Is(err, pgx.ErrNoRows) {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	} else if err != nil {
+		app.logError.Println(err)
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	if err = app.deleteAccountWithImages(userID); err != nil {
+		app.logError.Println(err)
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+}
+
+func (app *Application) deleteAccountWithImages(userID int) (err error) {
+	images, err := app.getAllImagesFromAccount(userID)
 	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	rows, err := app.db.QueryContext(ctx, "SELECT file_name FROM public.images WHERE file_uploader=$1", userID)
-	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	for rows.Next() {
-		var fileName string
-		if err = rows.Scan(&fileName); err != nil {
-			app.logError.Println(err)
-			continue
-		}
-
-		if err = app.deleteFile(fileName); err != nil {
+	for _, image := range images {
+		if err = app.deleteFile(image.FileName); err != nil {
 			app.logError.Println(err)
 		}
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err = app.db.ExecContext(ctx, "DELETE FROM public.images WHERE file_uploader=$1", userID); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	if err = app.deleteImagesFromAccount(userID); err != nil {
 		return
 	}
+
+	if err = app.deleteAccount(userID); err != nil {
+		return
+	}
+
+	return
 }
 
 // Api for deleting an image from your account
-func (app *Application) deleteImageAPI(w http.ResponseWriter, r *http.Request) {
-	if !r.Form.Has("file_name") {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+type deleteImageAPIInput struct {
+	FileName string `form:"file_name"`
+}
+
+func (app *Application) deleteImageAPI(c *gin.Context) {
+	var input deleteImageAPIInput
+	var err error
+
+	if err = c.MustBindWith(&input, binding.FormPost); err != nil {
+		c.String(http.StatusBadRequest, err.Error())
+		c.Abort()
 		return
 	}
-
-	fileName := r.FormValue("file_name")
-	uploadToken := r.FormValue("upload_token")
 
 	// Makes sure the image exists
-	if exists, err := app.fileExists(fileName); err != nil {
+	var exists bool
+	if exists, err = app.fileExists(input.FileName); err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	} else if !exists {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	var err error
-	if err = app.deleteFile(fileName); err != nil {
+	if err = app.deleteFile(input.FileName); err != nil { // Deletes file
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	userID, err := app.idByUploadToken(uploadToken)
-	if err != nil {
+	if err = app.deleteImageUploadToken(input.FileName, c.GetString("uploadToken")); err != nil { // Deletes file entry from database
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if err = app.deleteImage(fileName, userID); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	if _, err = fmt.Fprintln(w, "Successfully deleted image"); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	c.String(http.StatusOK, "Successfully deleted the image")
 }
 
 // Api for uploading image
-func (app *Application) uploadImageAPI(w http.ResponseWriter, r *http.Request) {
-	uploadToken := r.FormValue("upload_token")
-
-	fileRaw, _, err := r.FormFile("file")
-	if err != nil { // Occurs when user doesn't provide a file
-		http.Error(w, "No file provided", http.StatusBadRequest)
+func (app *Application) uploadImageAPI(c *gin.Context) {
+	fileRaw, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.String(http.StatusBadRequest, "No file provided")
+		c.Abort()
 		return
 	}
 
-	file, err := io.ReadAll(fileRaw) // Reads the file into file variable
+	file, err := io.ReadAll(fileRaw)
 	if err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if filetype.IsApplication(file) {
-		http.Error(w, "Unsupported file type", http.StatusUnsupportedMediaType)
-		return
-	}
+	//if filetype.IsApplication(file) {
+	//	c.AbortWithStatus(http.StatusUnsupportedMediaType)
+	//	return
+	//}
 
 	fullFileName, err := app.generateFullFileName(file)
 	if err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if app.isUsingS3() { // Uploads to bucket
+	switch app.fileStorageMethod {
+	case fileStorageS3:
 		err = app.uploadFileS3(file, fullFileName)
-	} else { // Uploads to local storage
+	case fileStorageLocal:
 		err = os.WriteFile(app.config.DataFolder+fullFileName, file, 0600)
+	default:
+		err = ErrUnknownStorageMethod
 	}
 
 	if err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	userID, err := app.idByUploadToken(uploadToken)
-	if err != nil {
+	if err = app.insertNewImageUploadToken(fullFileName, c.GetString("uploadToken")); err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if err = app.insertNewImage(fullFileName, userID); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	if err = fileRaw.Close(); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	http.Redirect(w, r, "https://"+r.Host+"/"+fullFileName, http.StatusFound)
+	c.Redirect(http.StatusTemporaryRedirect, "https://"+c.Request.Host+"/"+fullFileName)
 }
 
 // Api for changing your upload token
-func (app *Application) newUploadTokenAPI(w http.ResponseWriter, r *http.Request) {
-	token := r.FormValue("token")
-
-	var newToken string
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := app.db.QueryRowContext(ctx, "UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token", token).Scan(&newToken); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
+func (app *Application) newUploadTokenAPI(c *gin.Context) {
+	uploadToken, err := app.replaceUploadToken(c.GetString("token"))
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
 			app.logError.Println(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
 
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		c.AbortWithStatus(http.StatusUnauthorized)
 		return
 	}
 
-	if _, err := fmt.Fprintln(w, newToken); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	c.String(http.StatusOK, uploadToken)
 }

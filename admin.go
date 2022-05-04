@@ -1,105 +1,59 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/jackc/pgx/v4"
 	"net/http"
-	"time"
 )
 
 // Checks if the user is an admin with token
 func (app *Application) isAdmin(token string) (bool, error) {
-	var result string
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := app.db.QueryRowContext(ctx, "SELECT token FROM accounts WHERE token=$1 AND account_type='ADMIN'::account_type; ", token).Scan(&result); err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+	if err := app.findAdminByToken(token); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
 		}
 
-		return false, nil
+		return false, err
 	}
 
-	return result == token, nil
+	return true, nil
 }
 
 // Admin api for creating new user
-func (app *Application) adminCreateUser(w http.ResponseWriter, r *http.Request) {
-	var newUser User
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := app.db.QueryRowContext(ctx, "INSERT INTO public.accounts DEFAULT values RETURNING token, upload_token, id, account_type").Scan(&newUser.Token, &newUser.UploadToken, &newUser.ID, &newUser.AccountType); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.MarshalIndent(newUser, "", "\t")
+func (app *Application) adminCreateUser(c *gin.Context) {
+	user, err := app.createNewUser()
 	if err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	if _, err = fmt.Fprintln(w, string(data)); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	c.JSON(http.StatusOK, user)
 }
 
 // Admin api for deleting user
-func (app *Application) adminDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if !r.Form.Has("id") {
-		http.Error(w, "Missing id field", http.StatusBadRequest)
+type adminDeleteUserInput struct {
+	ID int `form:"id"`
+}
+
+func (app *Application) adminDeleteUser(c *gin.Context) {
+	var input adminDeleteUserInput
+	var err error
+
+	if err = c.MustBindWith(&input, binding.FormPost); err != nil {
+		c.String(http.StatusBadRequest, err.Error())
+		c.Abort()
 		return
 	}
 
-	id := r.FormValue("id")
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := app.db.ExecContext(ctx, "DELETE FROM public.accounts WHERE id=$1", id); err != nil {
+	if err = app.deleteAccountWithImages(input.ID); err != nil {
 		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	rows, err := app.db.QueryContext(ctx, "SELECT file_name FROM public.images WHERE file_uploader=$1", id)
-	if err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	for rows.Next() {
-		var fileName string
-		if err = rows.Scan(&fileName); err != nil {
-			app.logError.Println(err)
-			continue
-		}
-
-		if err = app.deleteFile(fileName); err != nil {
-			app.logError.Println(err)
-		}
-	}
-
-	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err = app.db.ExecContext(ctx, "DELETE FROM public.images WHERE file_uploader=$1", id); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	if _, err = fmt.Fprintf(w, "User %s deleted\n", id); err != nil {
-		app.logError.Println(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	c.String(http.StatusOK, fmt.Sprintf("User %d deleted", input.ID))
 }

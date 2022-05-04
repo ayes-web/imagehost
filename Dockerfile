@@ -6,10 +6,11 @@ COPY go.mod .
 COPY go.sum .
 RUN go mod download
 
+COPY public/ public/
+COPY templates/ templates/
 COPY *.go ./
 
 RUN go build -o /app/imagehost
-RUN rm go.mod go.sum *.go
 
 FROM alpine:3.15
 
@@ -19,7 +20,5 @@ WORKDIR /app
 
 COPY example_docker.toml /app/config.toml
 COPY --from=builder /app/imagehost /app/imagehost
-COPY template/ template/
-COPY public/ public/
 
 ENTRYPOINT [ "/app/imagehost", "-c", "/app/config.toml" ]

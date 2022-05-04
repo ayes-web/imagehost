@@ -1,119 +1,147 @@
 package main
 
 import (
-	"context"
 	"github.com/didip/tollbooth/v6"
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/google/uuid"
 	"net/http"
-	"time"
 )
 
-func (app *Application) ratelimitMiddleware(next http.Handler) http.Handler {
-	return tollbooth.LimitHandler(app.rateLimiter, next)
+func (app *Application) ratelimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		httpError := tollbooth.LimitByRequest(app.RateLimiter, c.Writer, c.Request)
+		if httpError != nil {
+			c.Data(httpError.StatusCode, app.RateLimiter.GetMessageContentType(), []byte(httpError.Message))
+			c.Abort()
+		} else {
+			c.Next()
+		}
+	}
 }
 
-func (app *Application) loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		app.logInfo.Println(r.RequestURI)
-		next.ServeHTTP(w, r)
-	})
+// limits request body size
+func (app *Application) bodySizeMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, app.config.MaxUploadSize)
+		c.Next()
+	}
 }
 
-// sets limit to body size
-func (app *Application) bodySizeMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, app.config.MaxUploadSize)
-		next.ServeHTTP(w, r)
-	})
-}
-
-// parses form and pings database
-func (app *Application) apiMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ParseMultipartForm(app.config.MaxUploadSize) != nil {
-			http.Error(w, "Too big file", http.StatusRequestEntityTooLarge)
+// parses form
+func (app *Application) apiMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := c.Request.ParseMultipartForm(app.config.MaxUploadSize); err != nil {
+			c.String(http.StatusRequestEntityTooLarge, "Too big file")
+			c.Abort()
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := app.db.PingContext(ctx); err != nil { // Makes sure database is alive
+		c.Next()
+	}
+}
+
+type TokenVerification struct {
+	Token string `form:"token"`
+}
+
+// Makes sure request has token and a valid one
+func hasTokenMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var token TokenVerification
+		var err error
+
+		if err = c.MustBindWith(&token, binding.FormPost); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.Abort()
+			return
+		}
+
+		if _, err = uuid.Parse(token.Token); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"invalid token": err.Error()})
+			c.Abort()
+			return
+		}
+
+		c.Set("token", token.Token)
+		c.Next()
+	}
+}
+func (app *Application) adminTokenVerificationMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if token, exists := c.Get("token"); !exists {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if isAdmin, err := app.isAdmin(token.(string)); err != nil {
 			app.logError.Println(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		} else if !isAdmin {
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
-
-// Makes sure its a valid admin token
-func (app *Application) adminVerificationMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !r.Form.Has("token") {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+func (app *Application) userTokenVerificationMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if token, exists := c.Get("token"); !exists {
+			c.AbortWithStatus(http.StatusBadRequest)
 			return
-		}
-
-		token := r.FormValue("token")
-
-		if admin, err := app.isAdmin(token); err != nil {
+		} else if valid, err := app.isValidToken(token.(string)); err != nil {
 			app.logError.Println(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		} else if !admin {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// Makes sure its a valid user token
-func (app *Application) userVerificationMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !r.Form.Has("token") {
-			http.Error(w, "Missing token field", http.StatusBadRequest)
-			return
-		}
-
-		token := r.FormValue("token")
-
-		valid, _, err := app.isValidToken(token)
-		if err != nil {
-			app.logError.Println(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		} else if !valid {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }
 
-// Makes sure it's a valid upload token
-func (app *Application) uploadTokenVerificationMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !r.Form.Has("upload_token") {
-			http.Error(w, "Missing upload token", http.StatusBadRequest)
+type UploadTokenVerification struct {
+	UploadToken string `form:"upload_token"`
+}
+
+// Makes sure request has upload token and a valid one
+func hasUploadTokenMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var uploadToken UploadTokenVerification
+		var err error
+
+		if err = c.MustBindWith(&uploadToken, binding.FormPost); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.Abort()
 			return
 		}
 
-		uploadToken := r.FormValue("upload_token")
+		if _, err = uuid.Parse(uploadToken.UploadToken); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"invalid upload token": err.Error()})
+			c.Abort()
+			return
+		}
 
-		// Makes sure the token is valid
-		result, _, err := app.isValidUploadToken(uploadToken)
-		if err != nil {
+		c.Set("uploadToken", uploadToken.UploadToken)
+		c.Next()
+	}
+}
+func (app *Application) uploadTokenVerificationMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if uploadToken, exists := c.Get("uploadToken"); !exists {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		} else if valid, err := app.isValidUploadToken(uploadToken.(string)); err != nil {
 			app.logError.Println(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			c.AbortWithStatus(http.StatusInternalServerError)
 			return
-		} else if !result {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		} else if !valid {
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		c.Next()
+	}
 }

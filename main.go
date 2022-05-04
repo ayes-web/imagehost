@@ -1,36 +1,47 @@
 package main
 
 import (
-	"flag"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/didip/tollbooth/v6/limiter"
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"html/template"
 	"log"
 	"net/http"
-	"time"
-
-	"database/sql"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/didip/tollbooth/v6"
-	"github.com/didip/tollbooth/v6/limiter"
-	_ "github.com/lib/pq"
 )
 
 type Application struct {
+	*Logger
+	*Templates
+
+	config      Config
+	db          *pgxpool.Pool
+	s3client    *s3.S3
+	RateLimiter *limiter.Limiter
+	Router      *gin.Engine
+
+	fileStorageMethod
+}
+
+type fileStorageMethod string
+
+const (
+	fileStorageLocal fileStorageMethod = "LOCAL"
+	fileStorageS3    fileStorageMethod = "S3"
+)
+
+type Logger struct {
 	logError   *log.Logger
 	logWarning *log.Logger
 	logInfo    *log.Logger
+}
 
+type Templates struct {
 	apiListTemplate *template.Template
 	indexTemplate   *template.Template
-
-	config      Config
-	db          *sql.DB
-	s3client    *s3.S3
-	rateLimiter *limiter.Limiter
 }
 
 type Config struct {
-	TemplateFolder           string `toml:"template_folder"`
-	StaticFolder             string `toml:"static_folder"`
 	DataFolder               string `toml:"data_folder"`
 	FileNameLength           int    `toml:"file_name_length"`
 	MaxUploadSize            int64  `toml:"max_upload_size"`
@@ -49,33 +60,23 @@ type s3Config struct {
 	CdnDomain       string `toml:"cdn_domain"`
 }
 
-type User struct {
-	UploadToken string
-	Token       string
-	ID          int
-	AccountType string
-}
-
 func main() {
-	app := Application{}
+	app := Application{
+		Logger:      setupLogging(),
+		RateLimiter: setupRatelimiting(),
+		Templates:   setupTemplates(),
+	}
 
-	app.setupLogging()
-
-	var configLocation string
-	flag.StringVar(&configLocation, "c", "config.toml", "Location of config file")
-	flag.Parse()
-
-	app.initializeConfig(configLocation)
-	app.setupTemplates()
+	app.initializeConfig()
 	app.prepareDb()
+	app.initializeRouter()
 
 	go app.autoDeletion()
 
-	app.rateLimiter = tollbooth.NewLimiter(2, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
-	app.rateLimiter.SetIPLookups([]string{"X-Forwarded-For", "RemoteAddr", "X-Real-IP"})
+	app.run()
+}
 
-	router := app.initializeRouter()
-
+func (app *Application) run() {
 	app.logInfo.Printf("Starting server at http://localhost:%s\n", app.config.WebPort)
-	app.logError.Fatal(http.ListenAndServe(":"+app.config.WebPort, router))
+	app.logError.Fatal(http.ListenAndServe(":"+app.config.WebPort, app.Router))
 }

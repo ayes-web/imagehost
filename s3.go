@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -39,8 +40,4 @@ func (app *Application) deleteFileS3(fileName string) (err error) {
 	})
 
 	return
-}
-
-func (app *Application) isUsingS3() bool {
-	return app.s3client != nil
 }
