@@ -12,7 +12,7 @@ import (
 
 // Api for deleting your own account
 func (app *Application) accountDeleteAPI(c *gin.Context) {
-	userID, err := app.idByToken(c.GetString("token"))
+	userID, err := app.db.idByToken(c.GetString("token"))
 	if errors.Is(err, pgx.ErrNoRows) {
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
@@ -30,7 +30,7 @@ func (app *Application) accountDeleteAPI(c *gin.Context) {
 }
 
 func (app *Application) deleteAccountWithImages(userID int) (err error) {
-	images, err := app.getAllImagesFromAccount(userID)
+	images, err := app.db.getAllImagesFromAccount(userID)
 	if err != nil {
 		return
 	}
@@ -41,11 +41,11 @@ func (app *Application) deleteAccountWithImages(userID int) (err error) {
 		}
 	}
 
-	if err = app.deleteImagesFromAccount(userID); err != nil {
+	if err = app.db.deleteImagesFromAccount(userID); err != nil {
 		return
 	}
 
-	if err = app.deleteAccount(userID); err != nil {
+	if err = app.db.deleteAccount(userID); err != nil {
 		return
 	}
 
@@ -69,7 +69,7 @@ func (app *Application) deleteImageAPI(c *gin.Context) {
 
 	// Makes sure the image exists
 	var exists bool
-	if exists, err = app.fileExists(input.FileName); err != nil {
+	if exists, err = app.db.fileExists(input.FileName); err != nil {
 		app.logError.Println(err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
@@ -84,7 +84,7 @@ func (app *Application) deleteImageAPI(c *gin.Context) {
 		return
 	}
 
-	if err = app.deleteImageUploadToken(input.FileName, c.GetString("uploadToken")); err != nil { // Deletes file entry from database
+	if err = app.db.deleteImageUploadToken(input.FileName, c.GetString("uploadToken")); err != nil { // Deletes file entry from database
 		app.logError.Println(err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
@@ -109,11 +109,6 @@ func (app *Application) uploadImageAPI(c *gin.Context) {
 		return
 	}
 
-	//if filetype.IsApplication(file) {
-	//	c.AbortWithStatus(http.StatusUnsupportedMediaType)
-	//	return
-	//}
-
 	fullFileName, err := app.generateFullFileName(file)
 	if err != nil {
 		app.logError.Println(err)
@@ -121,7 +116,7 @@ func (app *Application) uploadImageAPI(c *gin.Context) {
 		return
 	}
 
-	switch app.fileStorageMethod {
+	switch app.config.fileStorageMethod {
 	case fileStorageS3:
 		err = app.uploadFileS3(file, fullFileName)
 	case fileStorageLocal:
@@ -136,18 +131,18 @@ func (app *Application) uploadImageAPI(c *gin.Context) {
 		return
 	}
 
-	if err = app.insertNewImageUploadToken(fullFileName, c.GetString("uploadToken")); err != nil {
+	if err = app.db.insertNewImageUploadToken(fullFileName, c.GetString("uploadToken")); err != nil {
 		app.logError.Println(err)
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 
-	c.Redirect(http.StatusTemporaryRedirect, "https://"+c.Request.Host+"/"+fullFileName)
+	c.Redirect(http.StatusTemporaryRedirect, "/"+fullFileName)
 }
 
 // Api for changing your upload token
 func (app *Application) newUploadTokenAPI(c *gin.Context) {
-	uploadToken, err := app.replaceUploadToken(c.GetString("token"))
+	uploadToken, err := app.db.replaceUploadToken(c.GetString("token"))
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			app.logError.Println(err)

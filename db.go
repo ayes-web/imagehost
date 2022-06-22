@@ -5,20 +5,25 @@ import (
 	"errors"
 	"github.com/georgysavva/scany/pgxscan"
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"time"
 )
+
+type Database struct {
+	db *pgxpool.Pool
+}
 
 const getUserByIDQuery = `
 SELECT * FROM public.accounts WHERE id=$1;
 `
 
-func (app *Application) getUserByID(userID int) (account accountModel, err error) {
+func (db *Database) getUserByID(userID int) (account accountModel, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	err = pgxscan.Get(
 		ctx,
-		app.db,
+		db.db,
 		&account,
 		getUserByIDQuery,
 		userID,
@@ -31,11 +36,11 @@ const deleteImageUploadTokenQuery = `
 DELETE FROM public.images WHERE file_name=$1 AND file_uploader=(SELECT id FROM accounts WHERE upload_token=$2);
 `
 
-func (app *Application) deleteImageUploadToken(fileName string, uploadToken string) (err error) {
+func (db *Database) deleteImageUploadToken(fileName string, uploadToken string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err = app.db.Exec(
+	_, err = db.db.Exec(
 		ctx,
 		deleteImageUploadTokenQuery,
 		&fileName,
@@ -45,34 +50,34 @@ func (app *Application) deleteImageUploadToken(fileName string, uploadToken stri
 	return
 }
 
-const deleteImageQuery = `
-DELETE FROM public.images WHERE file_name=$1 AND file_uploader=$2;
-`
-
-func (app *Application) deleteImage(fileName string, userID int) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	_, err = app.db.Exec(
-		ctx,
-		deleteImageQuery,
-		&fileName,
-		&userID,
-	)
-
-	return
-}
+//const deleteImageQuery = `
+//DELETE FROM public.images WHERE file_name=$1 AND file_uploader=$2;
+//`
+//
+//func (db *Database) deleteImage(fileName string, userID int) (err error) {
+//	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+//	defer cancel()
+//
+//	_, err = db.db.Exec(
+//		ctx,
+//		deleteImageQuery,
+//		&fileName,
+//		&userID,
+//	)
+//
+//	return
+//}
 
 const insertNewImageUploadTokenQuery = `
 INSERT INTO public.images (file_name, file_uploader) 
 VALUES ($1, (SELECT id FROM accounts WHERE upload_token=$2));
 `
 
-func (app *Application) insertNewImageUploadToken(fileName string, uploadToken string) (err error) {
+func (db *Database) insertNewImageUploadToken(fileName string, uploadToken string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err = app.db.Query(
+	_, err = db.db.Query(
 		ctx,
 		insertNewImageUploadTokenQuery,
 		&fileName,
@@ -82,33 +87,33 @@ func (app *Application) insertNewImageUploadToken(fileName string, uploadToken s
 	return
 }
 
-const insertNewImageQuery = `
-INSERT INTO public.images (file_name, file_uploader) VALUES ($1, $2);
-`
-
-func (app *Application) insertNewImage(fileName string, userID int) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	_, err = app.db.Query(
-		ctx,
-		insertNewImageQuery,
-		&fileName,
-		&userID,
-	)
-
-	return
-}
+//const insertNewImageQuery = `
+//INSERT INTO public.images (file_name, file_uploader) VALUES ($1, $2);
+//`
+//
+//func (db *Database) insertNewImage(fileName string, userID int) (err error) {
+//	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+//	defer cancel()
+//
+//	_, err = db.db.Query(
+//		ctx,
+//		insertNewImageQuery,
+//		&fileName,
+//		&userID,
+//	)
+//
+//	return
+//}
 
 const deleteImagesFromAccountQuery = `
 DELETE FROM public.images WHERE file_uploader=$1;
 `
 
-func (app *Application) deleteImagesFromAccount(userID int) (err error) {
+func (db *Database) deleteImagesFromAccount(userID int) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err = app.db.Exec(
+	_, err = db.db.Exec(
 		ctx,
 		deleteImagesFromAccountQuery,
 		userID,
@@ -121,11 +126,11 @@ const deleteAccountQuery = `
 DELETE FROM public.accounts WHERE id=$1;
 `
 
-func (app *Application) deleteAccount(userID int) (err error) {
+func (db *Database) deleteAccount(userID int) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err = app.db.Exec(
+	_, err = db.db.Exec(
 		ctx,
 		deleteAccountQuery,
 		userID,
@@ -138,13 +143,13 @@ const getAllImagesFromAccountQuery = `
 SELECT file_name FROM public.images WHERE file_uploader=$1;
 `
 
-func (app *Application) getAllImagesFromAccount(userID int) (images []imageModel, err error) {
+func (db *Database) getAllImagesFromAccount(userID int) (images []imageModel, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	err = pgxscan.Select(
 		ctx,
-		app.db,
+		db.db,
 		images,
 		getAllImagesFromAccountQuery,
 		userID,
@@ -158,11 +163,11 @@ SELECT FROM public.images WHERE file_name=$1;
 `
 
 // Looks if file exists in database
-func (app *Application) fileExists(fileName string) (bool, error) {
+func (db *Database) fileExists(fileName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := app.db.QueryRow(ctx, fileExistsQuery, fileName).Scan(); err != nil {
+	if err := db.db.QueryRow(ctx, fileExistsQuery, fileName).Scan(); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return false, err
 		}
@@ -178,11 +183,11 @@ SELECT id FROM accounts WHERE token=$1;
 `
 
 // gets user id by token
-func (app *Application) idByToken(token string) (id int, err error) {
+func (db *Database) idByToken(token string) (id int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err = app.db.QueryRow(
+	err = db.db.QueryRow(
 		ctx,
 		findIDByTokenQuery,
 		token,
@@ -196,11 +201,11 @@ SELECT id FROM accounts WHERE upload_token=$1;
 `
 
 // gets user id by upload token
-func (app *Application) idByUploadToken(uploadToken string) (id int, err error) {
+func (db *Database) idByUploadToken(uploadToken string) (id int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err = app.db.QueryRow(
+	err = db.db.QueryRow(
 		ctx,
 		findIDByUploadTokenQuery,
 		uploadToken,
@@ -213,11 +218,11 @@ const replaceUploadTokenQuery = `
 UPDATE accounts SET upload_token=uuid_generate_v4() WHERE token=$1 RETURNING upload_token;
 `
 
-func (app *Application) replaceUploadToken(token string) (uploadToken string, err error) {
+func (db *Database) replaceUploadToken(token string) (uploadToken string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err = app.db.QueryRow(
+	err = db.db.QueryRow(
 		ctx,
 		replaceUploadTokenQuery,
 		token,
@@ -230,13 +235,13 @@ const createNewUserQuery = `
 INSERT INTO public.accounts DEFAULT values RETURNING *;
 `
 
-func (app *Application) createNewUser() (account accountModel, err error) {
+func (db *Database) createNewUser() (account accountModel, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	err = pgxscan.Get(
 		ctx,
-		app.db,
+		db.db,
 		&account,
 		createNewUserQuery,
 	)
@@ -248,13 +253,13 @@ const createNewAdminQuery = `
 INSERT INTO public.accounts (account_type) VALUES ('ADMIN'::account_type) RETURNING *;
 `
 
-func (app *Application) createNewAdmin() (account accountModel, err error) {
+func (db *Database) createNewAdmin() (account accountModel, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	err = pgxscan.Get(
 		ctx,
-		app.db,
+		db.db,
 		&account,
 		createNewAdminQuery,
 	)
@@ -266,11 +271,11 @@ const findAdminByTokenQuery = `
 SELECT FROM accounts WHERE token=$1 AND account_type='ADMIN'::account_type; 
 `
 
-func (app *Application) findAdminByToken(token string) (err error) {
+func (db *Database) findAdminByToken(token string) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err = app.db.QueryRow(
+	err = db.db.QueryRow(
 		ctx,
 		findAdminByTokenQuery,
 		token,
@@ -283,13 +288,13 @@ const findAllExpiredImagesQuery = `
 SELECT * FROM public.images WHERE created_date < NOW() - INTERVAL '7 days';
 `
 
-func (app *Application) findAllExpiredImages() (images []imageModel, err error) {
+func (db *Database) findAllExpiredImages() (images []imageModel, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	err = pgxscan.Select(
 		ctx,
-		app.db,
+		db.db,
 		&images,
 		findAllExpiredImagesQuery,
 	)
@@ -301,11 +306,11 @@ const deleteAllExpiredImagesQuery = `
 DELETE FROM public.images WHERE created_date < NOW() - INTERVAL '7 days';
 `
 
-func (app *Application) deleteAllExpiredImages() (err error) {
+func (db *Database) deleteAllExpiredImages() (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err = app.db.Exec(
+	_, err = db.db.Exec(
 		ctx,
 		deleteAllExpiredImagesQuery,
 	)

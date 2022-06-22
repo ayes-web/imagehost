@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"github.com/didip/tollbooth/v6"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/google/uuid"
 	"net/http"
+	"time"
 )
 
 func (app *Application) ratelimitMiddleware() gin.HandlerFunc {
@@ -17,6 +19,19 @@ func (app *Application) ratelimitMiddleware() gin.HandlerFunc {
 		} else {
 			c.Next()
 		}
+	}
+}
+func (app *Application) databaseConnectionCheck() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := app.db.db.Ping(ctx); err != nil {
+			app.db.db.Close()
+			app.db = prepareDB(app.Logger, app.config)
+		}
+
+		c.Next()
 	}
 }
 

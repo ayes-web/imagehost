@@ -11,7 +11,7 @@ import (
 
 // Checks if the user is an admin with token
 func (app *Application) isAdmin(token string) (bool, error) {
-	if err := app.findAdminByToken(token); err != nil {
+	if err := app.db.findAdminByToken(token); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -24,7 +24,7 @@ func (app *Application) isAdmin(token string) (bool, error) {
 
 // Admin api for creating new user
 func (app *Application) adminCreateUser(c *gin.Context) {
-	user, err := app.createNewUser()
+	user, err := app.db.createNewUser()
 	if err != nil {
 		app.logError.Println(err)
 		c.AbortWithStatus(http.StatusInternalServerError)

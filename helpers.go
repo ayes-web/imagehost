@@ -10,7 +10,7 @@ import (
 )
 
 func (app *Application) deleteFile(fileName string) (err error) {
-	switch app.fileStorageMethod {
+	switch app.config.fileStorageMethod {
 	case fileStorageLocal:
 		err = os.Remove(app.config.DataFolder + fileName)
 	case fileStorageS3:
@@ -43,7 +43,7 @@ func (app *Application) generateFullFileName(file []byte) (name string, err erro
 }
 
 func (app *Application) isValidToken(token string) (bool, error) {
-	if _, err := app.idByToken(token); err != nil {
+	if _, err := app.db.idByToken(token); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -54,7 +54,7 @@ func (app *Application) isValidToken(token string) (bool, error) {
 	return true, nil
 }
 func (app *Application) isValidUploadToken(uploadToken string) (bool, error) {
-	if _, err := app.idByUploadToken(uploadToken); err != nil {
+	if _, err := app.db.idByUploadToken(uploadToken); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}

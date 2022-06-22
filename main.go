@@ -4,7 +4,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/didip/tollbooth/v6/limiter"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"html/template"
 	"log"
 	"net/http"
@@ -13,14 +12,12 @@ import (
 type Application struct {
 	*Logger
 	*Templates
-
 	config      Config
-	db          *pgxpool.Pool
+	db          Database
 	s3client    *s3.S3
 	RateLimiter *limiter.Limiter
-	Router      *gin.Engine
 
-	fileStorageMethod
+	Router *gin.Engine
 }
 
 type fileStorageMethod string
@@ -48,6 +45,8 @@ type Config struct {
 	PostgresConnectionString string `toml:"postgres_connection_string"`
 	WebPort                  string `toml:"web_port"`
 
+	fileStorageMethod fileStorageMethod
+
 	S3 s3Config `toml:"s3"`
 }
 
@@ -60,23 +59,15 @@ type s3Config struct {
 	CdnDomain       string `toml:"cdn_domain"`
 }
 
-func main() {
-	app := Application{
-		Logger:      setupLogging(),
-		RateLimiter: setupRatelimiting(),
-		Templates:   setupTemplates(),
-	}
+func (app *Application) run() {
+	app.logInfo.Printf("Starting server at http://localhost:%s\n", app.config.WebPort)
+	app.logError.Fatal(http.ListenAndServe(":"+app.config.WebPort, app.Router))
+}
 
-	app.initializeConfig()
-	app.prepareDb()
-	app.initializeRouter()
+func main() {
+	app := initializeApplication()
 
 	go app.autoDeletion()
 
 	app.run()
-}
-
-func (app *Application) run() {
-	app.logInfo.Printf("Starting server at http://localhost:%s\n", app.config.WebPort)
-	app.logError.Fatal(http.ListenAndServe(":"+app.config.WebPort, app.Router))
 }

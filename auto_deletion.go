@@ -10,7 +10,7 @@ func (app *Application) autoDeletion() {
 	if _, err := c.AddFunc("@hourly", func() {
 		app.logInfo.Println("Starting hourly cron job")
 
-		images, err := app.findAllExpiredImages()
+		images, err := app.db.findAllExpiredImages()
 		if err != nil {
 			app.logError.Println(err)
 			return
@@ -22,7 +22,7 @@ func (app *Application) autoDeletion() {
 			}
 		}
 
-		if err = app.deleteAllExpiredImages(); err != nil {
+		if err = app.db.deleteAllExpiredImages(); err != nil {
 			app.logError.Println(err)
 			return
 		}
