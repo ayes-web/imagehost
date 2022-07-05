@@ -96,6 +96,7 @@ func (app *Application) deleteImageAPI(c *gin.Context) {
 // Api for uploading image
 func (app *Application) uploadImageAPI(c *gin.Context) {
 	fileRaw, _, err := c.Request.FormFile("file")
+	defer fileRaw.Close()
 	if err != nil {
 		c.String(http.StatusBadRequest, "No file provided")
 		c.Abort()

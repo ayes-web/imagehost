@@ -27,7 +27,8 @@ func (app *Application) indexFiles(c *gin.Context) {
 
 	// Looks if file exists in public folder then redirects there
 	filePath := filepath.Join("public", path.Clean(c.Request.URL.Path))
-	if _, err := publicFiles.Open(filePath); err == nil {
+	if file, err := publicFiles.Open(filePath); err == nil {
+		file.Close()
 		c.Redirect(http.StatusPermanentRedirect, path.Join("public", path.Clean(c.Request.URL.Path)))
 		return
 	}
